@@ -6,7 +6,7 @@ import time
 import multiprocessing as mp
 
 start_time = time.time()
-filename='scan_toy.csv'
+filename='ScanNA1.csv'
 
 # Read the CSV file
 df = pd.read_csv(filename)
