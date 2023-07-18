@@ -3,14 +3,26 @@ import numpy as np
 from neat.fields import StellnaQS
 from neat.tracing import ChargedParticleEnsemble, ParticleEnsembleOrbit
 import time
-import multiprocessing as mp
+from mpi4py import MPI
 
 start_time = time.time()
 filename='ScanNA1.csv'
 
-# Read the CSV file
-df = pd.read_csv(filename)
-df = df.dropna()
+# Initialize the MPI communicator
+comm = MPI.COMM_WORLD
+size = comm.Get_size()  # total number of processes
+rank = comm.Get_rank()  # rank of the current process
+
+# Only one process should handle the file input
+if rank == 0:
+    # Read the CSV file
+    df = pd.read_csv(filename)
+    df = df.dropna()
+else:
+    df = None
+
+# Broadcast df to all processes
+df = comm.bcast(df, root=0)
 
 B0 = 5.3267  # Tesla, magnetic field on-axis
 Rmajor_ARIES = 7.7495 * 2
@@ -25,14 +37,14 @@ r_max = Rminor_ARIES*np.sqrt(s_max)  # meters
 energy = 3.52e6  # electron-volt
 charge = 2  # times charge of proton
 mass = 4  # times mass of proton
-ntheta = 5  # resolution in theta
-nphi = 5  # resolution in phi
-nlambda_trapped = 10  # number of pitch angles for trapped particles
+ntheta = 2  # resolution in theta
+nphi = 2  # resolution in phi
+nlambda_trapped = 2  # number of pitch angles for trapped particles
 nlambda_passing = 0  # number of pitch angles for passing particles
 
 constant_b20 = True
-nsamples = 10000  # resolution in time
-tfinal = 1e-4  # seconds
+nsamples = 100  # resolution in time
+tfinal = 1e-6  # seconds
 dist = 0
 thetas = np.linspace(0, 2 * np.pi, ntheta)
 
@@ -72,22 +84,28 @@ def perform_particle_tracing(i):
         thetas=thetas,
         phis=varphis
     )
-
+    print('Done ' +str(i))
     loss_fraction = g_orbits.loss_fraction(r_max=r_max, jacobian_weight=True)
     return loss_fraction[-1]
 
-# Perform particle tracing in parallel using multiprocessing
-pool = mp.Pool(2)
-losses = pool.map(perform_particle_tracing, range(len(df)))
-pool.close()
-pool.join()
+# Split the data among processes
+data_split = np.array_split(range(len(df)), size)[rank]
 
-# print(losses)
+# Perform particle tracing in parallel using MPI
+losses = [perform_particle_tracing(i) for i in data_split]
 
-# Attach the losses to the dataframe
-df['Loss Fraction'] = losses
+# Gather all results to process 0
+all_losses = comm.gather(losses, root=0)
 
-# Save the modified DataFrame back to the CSV file
-df.to_csv('loss_fraction' + filename, index=False)
+# Only process 0 should handle the file output
+if rank == 0:
+    # Flatten the list of losses
+    all_losses = [item for sublist in all_losses for item in sublist]
 
-print(f"The process with multiprocessing took {time.time() - start_time} seconds.")
+    # Attach the losses to the dataframe
+    df['Loss Fraction'] = all_losses
+
+    # Save the modified DataFrame back to the CSV file
+    df.to_csv('loss_fraction' + filename, index=False)
+
+    print(f"The process with multiprocessing took {time.time() - start_time} seconds.")
